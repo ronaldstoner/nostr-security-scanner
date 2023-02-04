@@ -1,0 +1,72 @@
+{
+    "EXAMPLE-REGEX": {
+        "description": "Example of a regex rule entry",
+        "weight": 5,
+        "value": null,
+        "window": null,
+        "regex": "RegexExpToMatchOn"
+    },
+    "001": {
+        "description": "Malformed/Bad Event Signature",
+        "weight": 10,
+        "value": null,
+        "window": null,
+        "regex": "System Rule - No RegEx"
+    },
+    "002": {
+        "description": "Duplicate event content",
+        "weight": 5,
+        "value": 2,
+        "window": null,
+        "regex": null
+    },
+    "003": {
+        "description": "Large burst of messages",
+        "weight": 8,
+        "value": 5,
+        "window": 10,
+        "regex": null
+    },
+    "004": {
+        "description": "Possible SQL Injection",
+        "weight": 5,
+        "value": null,
+        "window": null,
+        "regex": "/(\\%27)|(\\')|(\\-\\-)|(\\%23)|(#)/ix"
+    },
+    "005": {
+        "description": "Possible SQL Injection (Blind)",
+        "weight": 5,
+        "value": null,
+        "window": null,
+        "regex": "(\\w+\\s*?(SLEEP|BENCHMARK|WAITFOR)\\s*?\\(\\s*?[\\d,]+\\s*?\\))"
+    },
+    "006": {
+        "description": "Possible SQL Injection (Union)",
+        "weight": 5,
+        "value": null,
+        "window": null,
+        "regex": "(?i)UNION\\s+SELECT"
+    },
+    "007": {
+        "description": "Possible SQL Injection (MS-SQL)",
+        "weight": 5,
+        "value": null,
+        "window": null,
+        "regex": "(?i)exec(\\s|\\+)+(s|x)p\\w+"
+    },
+    "008": {
+        "description": "Possible Cross Site Scripting (XSS)",
+        "weight": 5,
+        "value": null,
+        "window": null,
+        "regex": "(<|<)(\\s|\/)*script(\\s|>|>)"
+    },
+    "009": {
+        "description": "PHP File Inclusion",
+        "weight": 5,
+        "value": null,
+        "window": null,
+        "regex": "(include|require)(_once)?\\s*\\(\\s*[\"']?([^\"'\\n]+?)[\"']?\\s*\\)"
+    }
+}
