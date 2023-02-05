@@ -16,16 +16,16 @@
     "002": {
         "description": "Duplicate event content",
         "weight": 5,
-        "value": 2,
+        "value": 10,
         "window": null,
-        "regex": null
+        "regex": "(count of) Rule - No RegEx"
     },
     "003": {
         "description": "Large burst of messages",
         "weight": 8,
-        "value": 5,
-        "window": 10,
-        "regex": null
+        "value": 10,
+        "window": 30,
+        "regex": "(Count of) Rule - No RegEx"
     },
     "004": {
         "description": "Possible SQL Injection",

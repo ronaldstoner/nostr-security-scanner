@@ -3,7 +3,7 @@
 # Project:      nostr deleted events parser
 # Members:      ronaldstoner
 #
-version = "0.1.1"
+version = "0.1.3"
 
 import asyncio
 import coloredlogs
@@ -25,7 +25,7 @@ search_days = 1                   # How many days of events to query from relay
 mongo_server = "localhost:27017"    # Mongodb server to store data
 
 # Different relays may give different results. Some timeout, some loop, some keep alive.
-relay = "wss://relay.stoner.com"
+relays = "wss://relay.damus.io,wss://relay.stoner.com"
 
 # Create a logger object.
 logger = logging.getLogger(__name__)
@@ -49,6 +49,9 @@ pubkeys_collection = db["pubkeys"]      # pubkey, score
 # Rule 002 - Define dictionary to keep track of event content count for each pubkey
 duplicate_count = defaultdict(lambda: defaultdict(int))
 
+# Rule 003 - Define dictionary to track bursting of events from a pubkey
+pubkey_burst = {}
+
 # Load detection rules
 logger.info("Loading event security detection ruleset")
 try:
@@ -60,8 +63,13 @@ except:
     logger.critical("Could not load ruleset. Exiting.")
 logger.info(f"Loaded {len(ruleset)} rules from ruleset")
 
+async def connect_to_relays(relays):
+    relays = relays.split(',')
+    for relay in relays:
+        await connect_to_relay(relay)
+
 # Connect to remote relay via websocket and query for events
-async def connect_to_relay():
+async def connect_to_relay(relay):
     logger.info(f"Connecting to relay at {relay}...")
     async with websockets.connect(relay, ping_interval=ping_keepalive) as relay_conn:
         logger.info(f"Connected to {relay}")
@@ -70,7 +78,8 @@ async def connect_to_relay():
         logger.info("Subscribing to event types = 1")
         search_filter = {
             "kinds": [1],
-            "from": (datetime.datetime.now() - datetime.timedelta(days=search_days)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            "since": int(time.mktime((datetime.datetime.now() - datetime.timedelta(days=search_days)).timetuple())),
+            "until": int(time.time())
         }
         await relay_conn.send(json.dumps(["REQ", "nostr-security-scanner", search_filter]))
 
@@ -79,7 +88,6 @@ async def connect_to_relay():
             try:
                 event = await asyncio.wait_for(relay_conn.recv(), timeout=relay_timeout)
                 event = json.loads(event)
-                #print(event[0])
                 if event[0] == "EVENT":
                     logger.debug(f"EVENT: {event}")
                     await write_event(event)
@@ -100,16 +108,16 @@ async def write_event(event):
     event_id = event[2]["id"]
     existing_event = events_collection.find_one({"event.id": event_id})
     if existing_event:
-        logger.info(f"Event with id {event_id} already exists in the database")
+        logger.debug(f"Event with id {event_id} already exists in the database")
         return
     else:
         # Convert event list into a dictionary and store in database
         event_dict = {"event": event[2], "score": 0, "scored": False}
         try:
             events_collection.insert_one(event_dict)
-            logger.info("Event written to mongodb")
+            logger.debug("Event written to mongodb")
         except Exception as e:
-            logger.info(f"Could not write event to mongodb - {e}")
+            logger.debug(f"Could not write event to mongodb - {e}")
             return
 
 def check_events(rules):
@@ -123,9 +131,10 @@ def check_events(rules):
         score = 0
         # Get the event content
         event_content = event["event"]["content"]
+        event_timestamp = event["event"]["created_at"]
+        event_pubkey = event["event"]["pubkey"]
         # Evaluate the event against the ruleset
         for rule in rules:
-            #print(rules[rule])
             description = rules[rule]["description"]
             value = rules[rule]["value"]
             window = rules[rule]["window"]
@@ -147,17 +156,29 @@ def check_events(rules):
                     # Drop the event
                     return
                 else:
-                    duplicate_events = events_collection.find({"event.pubkey": event["event"]["pubkey"], "event.content": event["event"]["content"]})
+                    duplicate_events = events_collection.find({"event.pubkey": event_pubkey, "event.content": event_content})
                     duplicate_count = len(list(duplicate_events))
                     if duplicate_count >= value:
                         # Duplicate content found and is above threshold
-                        print(f"Duplicate content found: {event['event']['pubkey']} - {event_content} - {duplicate_count} times")               
+                        logger.info(f"Duplicate content found: {event_pubkey} - {event_content} - {duplicate_count} times")
                         score += weight
 
             # 003 - Large burst of messages
             if rule == "003":
                 #logger.info("Rule 003 - Large burst of messages")
-                score += 100
+
+                if event_pubkey in pubkey_burst:
+                    time_since_last_event = event_timestamp - pubkey_burst[event_pubkey]["last_event_timestamp"]
+                    if time_since_last_event <= window:
+                        pubkey_burst[event_pubkey]["event_count"] += 1
+                        if pubkey_burst[event_pubkey]["event_count"] > value:
+                            logger.info(f"Burst content found: {event_pubkey} - {pubkey_burst[event_pubkey]['event_count']} times in {window} seconds")
+                            score += weight
+                    else:
+                        # reset event_count if the time_since_last_event is greater than the window time
+                        pubkey_burst[event_pubkey]["event_count"] = 1
+                else:
+                    pubkey_burst[event_pubkey] = {"event_count": 1, "last_event_timestamp": event_timestamp}
 
             ## 004 to 0999 - General regex rules
 
@@ -175,8 +196,6 @@ def check_events(rules):
             #         print(f"{rule} Match\n{description}\n: {event_content}")
             #     #if re.search(spam_rules["003"]["regex"], event_content):
 
-        # score = evaluate_event(event_content, ruleset)
-        # score = 100
         # If the score is above the minimum score, set the score in the events collection and set the "scored" boolean to True
         if score >= 0:
             events_collection.update_one({"event.id": event['event']['id']}, {"$set": {"score": score, "scored": True}})
@@ -188,7 +207,7 @@ def check_events(rules):
 # Main program loop
 if __name__ == "__main__":
     try:
-        asyncio.run(connect_to_relay())
+        asyncio.run(connect_to_relays(relays))
         check_events(ruleset)
         logger.info("The program has finished.")
     except Exception as e:
