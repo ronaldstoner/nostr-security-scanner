@@ -3,9 +3,7 @@
 # Project:      nostr deleted events parser
 # Members:      ronaldstoner
 #
-# Changelog
-# 0.1 - Initial PoC
-version = "0.1"
+version = "0.1.1"
 
 import asyncio
 import coloredlogs
@@ -39,7 +37,7 @@ coloredlogs.install(level=log_level)
 # Connect to MongoDB
 client = MongoClient("mongodb://" + mongo_server)
 try:
-    db = client["relay"]
+    db = client["nostr-security"]
 except:
     logger.critical(f"Could not connect to mongodb at {mongo_server}. Exiting.")
 logger.info(f"Connected to monogodb at {mongo_server}")
@@ -47,6 +45,9 @@ logger.info(f"Connected to monogodb at {mongo_server}")
 # Define database tables
 events_collection = db["events"]        # Raw event data
 pubkeys_collection = db["pubkeys"]      # pubkey, score
+
+# Rule 002 - Define dictionary to keep track of event content count for each pubkey
+duplicate_count = defaultdict(lambda: defaultdict(int))
 
 # Load detection rules
 logger.info("Loading event security detection ruleset")
@@ -95,31 +96,100 @@ async def connect_to_relay():
 
 # Write events to a database for future consumption
 async def write_event(event):
-    # Check if the event content has only 1 emoji (reactions)
-    if all(ord(c) > 127 for c in event[2]['content']) and len(event[2]['content']) == 1:
-        # Drop the event
+    # Check if an event with the same id already exists in the database
+    event_id = event[2]["id"]
+    existing_event = events_collection.find_one({"event.id": event_id})
+    if existing_event:
+        logger.info(f"Event with id {event_id} already exists in the database")
         return
     else:
-        # Check if an event with the same id already exists in the database
-        event_id = event[2]["id"]
-        existing_event = events_collection.find_one({"event.id": event_id})
-        if existing_event:
-            logger.debug(f"Event with id {event_id} already exists in the database")
+        # Convert event list into a dictionary and store in database
+        event_dict = {"event": event[2], "score": 0, "scored": False}
+        try:
+            events_collection.insert_one(event_dict)
+            logger.info("Event written to mongodb")
+        except Exception as e:
+            logger.info(f"Could not write event to mongodb - {e}")
             return
+
+def check_events(rules):
+    # Query unscored events from the events collection
+    unscored_events = events_collection.find({"scored": False})
+
+    # Iterate through the unscored events
+    logger.info("Checking and scoring unscored events")
+    for event in unscored_events:
+        # Set default score to start with
+        score = 0
+        # Get the event content
+        event_content = event["event"]["content"]
+        # Evaluate the event against the ruleset
+        for rule in rules:
+            #print(rules[rule])
+            description = rules[rule]["description"]
+            value = rules[rule]["value"]
+            window = rules[rule]["window"]
+            weight = rules[rule]["weight"]
+            regex = rules[rule]["regex"]
+
+            ## Default System Rules
+
+            # 001 - Malformed/Bad Event Signature
+            if rule == "001":
+                #logger.info("Rule 001 - Malformed/Bad Event Signature")
+                score += 1
+
+            # 002 - Duplicate Event Content
+            if rule == "002":
+                #logger.info("Rule 002 - Duplicate Event Content")
+                # Check if the event content has only 1 or 2 emoji (reactions)
+                if all(ord(c) > 127 for c in event_content) and len(event_content) <= 2:
+                    # Drop the event
+                    return
+                else:
+                    duplicate_events = events_collection.find({"event.pubkey": event["event"]["pubkey"], "event.content": event["event"]["content"]})
+                    duplicate_count = len(list(duplicate_events))
+                    if duplicate_count >= value:
+                        # Duplicate content found and is above threshold
+                        print(f"Duplicate content found: {event['event']['pubkey']} - {event_content} - {duplicate_count} times")               
+                        score += weight
+
+            # 003 - Large burst of messages
+            if rule == "003":
+                #logger.info("Rule 003 - Large burst of messages")
+                score += 100
+
+            ## 004 to 0999 - General regex rules
+
+            # else:
+            #     #logger.info("Other Regex Rules")
+            #     # if re.search(str(event_content), str(regex)):
+            #     #      score += weight
+            #     #      print(f"004 Match: {event_content}")
+
+            #     #regex = re.compile(regex)
+            #     compiled_regex = re.compile(regex, re.IGNORECASE)
+
+            #     if re.search(compiled_regex, event_content):
+            #         score += weight
+            #         print(f"{rule} Match\n{description}\n: {event_content}")
+            #     #if re.search(spam_rules["003"]["regex"], event_content):
+
+        # score = evaluate_event(event_content, ruleset)
+        # score = 100
+        # If the score is above the minimum score, set the score in the events collection and set the "scored" boolean to True
+        if score >= 0:
+            events_collection.update_one({"event.id": event['event']['id']}, {"$set": {"score": score, "scored": True}})
+        # If the score is below the minimum score, set the "scored" boolean to True
         else:
-            # Convert event list into a dictionary and store in database
-            event_dict = {"event": event[2]}
-            try:
-                events_collection.insert_one(event_dict)
-                logger.info("Event written to mongodb")
-            except Exception as e:
-                logger.info(f"Could not write event to mongodb - {e}")
-                return
+            events_collection.update_one({"event.id": event['event']['id']}, {"$set": {"score": 0, "scored": True}})
+
 
 # Main program loop
 if __name__ == "__main__":
     try:
         asyncio.run(connect_to_relay())
+        check_events(ruleset)
         logger.info("The program has finished.")
     except Exception as e:
         logger.critical(f"Exception: {e}")
